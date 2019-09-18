@@ -1,4 +1,5 @@
 import torch
+import numpy as np
 from torch.utils import data
 import torch.nn as nn
 from torch import optim
@@ -7,9 +8,12 @@ import datas
 from models.dense2 import KitModel
 import torchvision.transforms.transforms as transforms
 import importlib
+from torch.nn.modules.distance import PairwiseDistance
+from eval_metrics import evaluate, plot_roc
 
+l2_dist = PairwiseDistance(2)
 use_cuda = torch.cuda.is_available()
-total_epoch = 80
+total_epoch = 150
 
 transform = transforms.Compose([
     transforms.Grayscale(),
@@ -32,6 +36,8 @@ total_epoch = 100
 
 def train(epoch):
     print("train {} epoch".format(epoch))
+    labels, distances = [], []
+    triplet_loss_sum = 0.0
     net.train()
     for batch_idx, (anc, pos, neg) in enumerate(trainloader):
         if use_cuda:
@@ -42,10 +48,31 @@ def train(epoch):
         pos_fea = net(pos)
         neg_fea = net(neg)
         loss = criterion(anc_fea, pos_fea, neg_fea)
-        print(loss)
+        print(loss.item())
         loss.backward()
         optimizer.step()
-    if epoch % 2 == 0:
+
+        dists = l2_dist.forward(anc_fea, pos_fea)
+        distances.append(dists.data.cpu().numpy())
+        labels.append(np.ones(dists.size(0)))
+
+        dists = l2_dist.forward(anc_fea, neg_fea)
+        distances.append(dists.data.cpu().numpy())
+        labels.append(np.zeros(dists.size(0)))
+        triplet_loss_sum += loss.item()
+
+    avg_triplet_loss = triplet_loss_sum / trainset.__len__()
+    labels = np.array([sublabel for label in labels for sublabel in label])
+    distances = np.array([subdist for dist in distances for subdist in dist])
+    print(labels)
+    print(distances)
+    tpr, fpr, accuracy, val, val_std, far = evaluate(distances, labels)
+    print('  train set - Triplet Loss       = {:.8f}'.format(avg_triplet_loss))
+    print('  train set - Accuracy           = {:.8f}'.format(np.mean(accuracy)))
+
+    if epoch % 50 == 0:
+        plot_roc(fpr, tpr, figure_name='./log/roc_valid_epoch_{}.png'.format(epoch))
+    if epoch >= 50 and epoch % 5 == 0:
         torch.save(net, "./check_points/{}_checkpoint.pkl".format(epoch))
         print("save {}_checkpoint.pkl".format(epoch))
 
